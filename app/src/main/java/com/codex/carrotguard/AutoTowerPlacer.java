@@ -215,51 +215,6 @@ public class AutoTowerPlacer {
         void onError(String error);
         Bitmap onRequestScreenshot();
     }
-        notifyStatus("正在分析地图...");
-        
-        MapAnalyzer.AnalysisResult result = mapAnalyzer.analyze(screenBitmap);
-        notifyStatus("地图分析完成，正在寻找最优位置...");
-        
-        List<MapAnalyzer.TowerPosition> towerSlots = result.towerSlotPositions;
-        List<MapAnalyzer.TowerPosition> routes = result.routePositions;
-        
-        if (towerSlots.isEmpty()) {
-            notifyError("未找到可放塔位置");
-            return;
-        }
-
-        if (routes.isEmpty()) {
-            notifyError("未找到路线");
-            return;
-        }
-
-        notifyStatus("找到 " + towerSlots.size() + " 个可放塔位置，" + routes.size() + " 个路线格子");
-        
-        List<ScoredPosition> scoredPositions = scorePositions(towerSlots, routes);
-        Collections.sort(scoredPositions, (a, b) -> Integer.compare(b.score, a.score));
-        
-        if (scoredPositions.isEmpty()) {
-            notifyError("无法计算最优位置");
-            return;
-        }
-
-        ScoredPosition bestPosition = scoredPositions.get(0);
-        notifyStatus("最优位置: (" + bestPosition.position.x + ", " + bestPosition.position.y + ") 评分: " + bestPosition.score);
-        notifyStatus("原因: " + bestPosition.reason);
-        
-        clicker.click(bestPosition.position.x, bestPosition.position.y, new AutoClicker.Callback() {
-            @Override
-            public void onSuccess(String message) {
-                notifyTowerPlaced(bestPosition.position.x, bestPosition.position.y, bestPosition.reason);
-                notifyComplete("自动放塔完成");
-            }
-
-            @Override
-            public void onError(String error) {
-                notifyError("点击失败: " + error);
-            }
-        });
-    }
 
     private List<ScoredPosition> scorePositions(List<MapAnalyzer.TowerPosition> towerSlots, 
                                                 List<MapAnalyzer.TowerPosition> routes) {
