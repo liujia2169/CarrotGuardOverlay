@@ -15,19 +15,23 @@ public class SuggestionEngine {
         lastUpdateAt = now;
 
         ScreenStats stats = readStats(bitmap, visibleWidth, visibleHeight);
-        String focus = stats.brightRatio > 0.32f ? "障碍和空地较多，先清能覆盖路线的障碍" : "画面较密集，优先补强已有火力";
-        String position = stats.centerActivity > stats.edgeActivity ? "中路/拐角附近" : "入口和出口附近";
+        String focus = stats.brightRatio > 0.32f
+            ? "空地和障碍较多，优先清理能打开关键塔位的障碍。"
+            : "画面较密集，优先升级已经覆盖路线的核心炮塔。";
+        String position = stats.centerActivity > stats.edgeActivity
+            ? "中路拐角"
+            : "入口和出口附近";
 
         step = (step + 1) % 4;
         switch (step) {
             case 0:
-                return "建议：" + position + "先放范围塔\n" + focus;
+                return "建议：在" + position + "附近放范围伤害炮塔。\n" + focus;
             case 1:
-                return "升级优先级：覆盖多段路线的塔 > 减速塔 > 单体塔\n金币不足时先升核心位置";
+                return "升级优先级：覆盖多段路线 > 减速/控制 > 单体输出。\n金币优先留给核心位置。";
             case 2:
-                return "清障顺序：能打开新塔位的障碍优先\n避免在短直线路段堆太多单体塔";
+                return "清障优先级：先清能打开新塔位的障碍。\n短直线路段不要堆太多单体输出。";
             default:
-                return "观察重点：怪物转弯处和长路线重叠处\n这些位置通常收益最高";
+                return "重点观察拐角和路线重叠区域。\n这些位置通常收益最高。";
         }
     }
 

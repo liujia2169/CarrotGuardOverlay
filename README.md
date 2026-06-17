@@ -1,36 +1,57 @@
-# 萝卜战术提示器
+# Carrot Guard
 
-这是一个安卓悬浮提示器原型，用于读取当前屏幕画面并显示策略建议。
+Android floating strategy helper prototype.
 
-它不会自动点击游戏、不会修改内存、不会修改金币/钻石、不会绕过内购。
+The app reads the current screen through Android screen capture permission and shows a draggable overlay. It does not tap, automate gameplay, modify memory, change currency, speed up the game, or bypass purchases.
 
-## 功能
+## Features
 
-- 申请悬浮窗权限
-- 申请系统屏幕录制权限
-- 显示可拖动悬浮窗
-- 周期性读取屏幕画面
-- 根据画面特征显示基础战术提示
+- Requests overlay permission.
+- Requests Android screen capture permission.
+- Shows a draggable floating overlay.
+- Reads screen frames periodically.
+- Shows basic strategy hints.
+- Saves the latest captured screen frame to `Pictures/CarrotGuardOverlay`.
+- Saves an annotated analysis image that marks possible route, tower slots, and blockers.
+- Loads local guide JSON files from `assets/map_guides`.
+- Imports guide JSON files from the Android file picker.
+- Shows imported guide files in a manager screen.
+- Shows guide details, tips, signature validity, and JSON errors.
+- Deletes imported guide files from the manager screen.
+- Validates imported JSON before adding it to the library.
+- Matches the current screen against guide signatures.
+- Shows top guide match candidates with scores.
+- Exports a ready-to-edit guide JSON template from the current screen.
+- Stores core static UI strings in Android resources.
+- Adds a diagnostics screen for inspecting screenshot signatures and match candidates.
 
-## 构建方式
+## Build
 
-1. 安装 Android Studio。
-2. 打开本目录 `CarrotGuardOverlay`。
-3. 等待 Gradle 同步完成。
-4. 用 USB 连接安卓手机，开启开发者选项和 USB 调试。
-5. 点击 Run 安装到手机。
+Use GitHub Actions or GitLab CI for cloud builds. See:
 
-## 使用方式
+- `CLOUD_BUILD.md`
+- `GITLAB_BUILD.md`
 
-1. 打开“萝卜战术提示器”。
-2. 点击“开启悬浮窗权限”。
-3. 返回 App，点击“启动屏幕分析悬浮窗”。
-4. 在系统弹窗里允许屏幕录制。
-5. 打开游戏，拖动悬浮窗到不挡视野的位置。
+Local builds require Android Studio or Android SDK, JDK 17, and Gradle.
 
-## 后续可增强
+## Usage
 
-- 增加截图保存和标注功能，方便调试识别结果。
-- 引入 OpenCV，识别路线、塔位和障碍物。
-- 加入 PaddleOCR 或 ML Kit，识别金币、波次和倒计时。
-- 做关卡特征库，记住相似地图的历史通关策略。
+1. Open Carrot Guard.
+2. Enable overlay permission.
+3. Start the screen analysis overlay.
+4. Allow Android screen capture.
+5. Open the game.
+6. Drag the overlay by its title.
+7. Tap `Save screenshot` to save the current frame.
+8. Tap `Analyze map` to save an annotated image.
+9. Tap `Match guide` to match the current screen against local guide files.
+10. Tap `Export guide JSON` to save a guide template.
+11. Edit the JSON tips with any text editor.
+12. Open the app and tap `Import guide JSON`.
+13. Tap `Manage guides` to review or delete imported guides.
+
+## Next Steps
+
+- Add a screenshot gallery/debug screen.
+- Add OCR for coins, wave count, and timers.
+- Improve strategy hints using map features.

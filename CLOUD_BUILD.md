@@ -1,21 +1,16 @@
-# 云端编译 APK
+# GitHub Actions Cloud Build
 
-推荐用 GitHub Actions 编译，电脑不需要安装 Android Studio。
+Use this when GitHub Actions is available for your account.
 
-## 步骤
+## Steps
 
-1. 注册或登录 GitHub。
-2. 新建一个仓库，可以选择 Private。
-3. 把本项目里的所有文件上传到仓库根目录。
-4. 打开仓库页面的 Actions。
-5. 选择 `Build Android Debug APK`。
-6. 点击 `Run workflow`。
-7. 等构建完成后，打开本次运行记录。
-8. 在 Artifacts 里下载 `CarrotGuardOverlay-debug-apk`。
-9. 解压后得到 `app-debug.apk`，传到安卓手机安装。
+1. Upload all files from this project directory to the root of your GitHub repository.
+2. Open the repository `Actions` tab.
+3. Select `Build Android Debug APK`.
+4. Click `Run workflow`.
+5. Wait for the build to complete.
+6. Open the completed run.
+7. Download `CarrotGuardOverlay-debug-apk` from `Artifacts`.
+8. Unzip it and install `app-debug.apk` on your Android phone.
 
-## 手机安装
-
-如果手机提示不能安装未知来源应用，需要在系统设置里允许浏览器、文件管理器或聊天软件安装未知来源应用。
-
-这是 debug 包，适合自己测试，不适合发布到应用商店。
+This is a debug APK for personal testing.
