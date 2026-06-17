@@ -21,652 +21,237 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-
 import java.nio.ByteBuffer;
 
 public class OverlayService extends Service {
-    public static final String EXTRA_RESULT_CODE = "result_code";
-    public static final String EXTRA_RESULT_DATA = "result_data";
+    public static final String EXTRA_CODE = "code";
+    public static final String EXTRA_DATA = "data";
+    private static final String CH = "carrot";
+    private static final int NID = 42;
 
-    private static final String CHANNEL_ID = "carrot_guard_overlay";
-    private static final int NOTIFICATION_ID = 42;
+    private final Object lock = new Object();
+    private final GameCheater cheater = new GameCheater();
+    private WindowManager wm;
+    private LinearLayout overlay;
+    private TextView hint;
+    private WindowManager.LayoutParams params;
+    private MediaProjection proj;
+    private ImageReader reader;
+    private VirtualDisplay vd;
+    private HandlerThread thread;
+    private Handler handler;
+    private Bitmap frame;
 
-    private final Object frameLock = new Object();
-    private final SuggestionEngine suggestionEngine = new SuggestionEngine();
-    private final MapAnalyzer mapAnalyzer = new MapAnalyzer();
-    private AutoSignService autoSignService;
-    private GameCheater gameCheater;
-    private AutoTowerPlacer autoTowerPlacer;
-
-    private WindowManager windowManager;
-    private LinearLayout overlayView;
-    private TextView hintView;
-    private WindowManager.LayoutParams overlayParams;
-
-    private MediaProjection mediaProjection;
-    private MediaProjection.Callback projectionCallback;
-    private ImageReader imageReader;
-    private VirtualDisplay virtualDisplay;
-    private HandlerThread captureThread;
-    private Handler captureHandler;
-    private Bitmap latestFrame;
+    @Override
+    public IBinder onBind(Intent i) { return null; }
 
     @Override
     public void onCreate() {
         super.onCreate();
-        createNotificationChannel();
-        startForeground(NOTIFICATION_ID, buildNotification());
-        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-        autoSignService = new AutoSignService();
-        gameCheater = new GameCheater();
-        autoTowerPlacer = new AutoTowerPlacer();
+        createChannel();
+        startForeground(NID, buildNotif());
+        wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         addOverlay();
     }
 
     @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && intent.hasExtra(EXTRA_RESULT_DATA)) {
-            int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
-            Intent resultData = intent.getParcelableExtra(EXTRA_RESULT_DATA);
-            startProjection(resultCode, resultData);
+    public int onStartCommand(Intent i, int f, int id) {
+        if (i != null && i.hasExtra(EXTRA_DATA)) {
+            startProj(i.getIntExtra(EXTRA_CODE, 0), i.getParcelableExtra(EXTRA_DATA));
         }
         return START_STICKY;
     }
 
     @Override
-    public IBinder onBind(Intent intent) {
-        return null;
-    }
-
-    @Override
     public void onDestroy() {
-        stopProjection();
-        if (overlayView != null) {
-            windowManager.removeView(overlayView);
-            overlayView = null;
-        }
-        recycleLatestFrame();
+        stopProj();
+        if (overlay != null) wm.removeView(overlay);
         super.onDestroy();
     }
 
     private void addOverlay() {
-        overlayView = new LinearLayout(this);
-        overlayView.setOrientation(LinearLayout.VERTICAL);
-        overlayView.setPadding(dp(12), dp(10), dp(12), dp(10));
-        overlayView.setBackgroundColor(0xDD1B5E20);
+        overlay = new LinearLayout(this);
+        overlay.setOrientation(LinearLayout.VERTICAL);
+        overlay.setPadding(dp(12), dp(10), dp(12), dp(10));
+        overlay.setBackgroundColor(0xDD1B5E20);
 
         TextView title = new TextView(this);
         title.setText("萝卜助手");
         title.setTextColor(0xFFFFFFFF);
         title.setTextSize(14);
-        overlayView.addView(title);
+        overlay.addView(title);
 
-        hintView = new TextView(this);
-        hintView.setText("等待屏幕授权...");
-        hintView.setTextColor(0xFFFFFFFF);
-        hintView.setTextSize(13);
-        hintView.setPadding(0, dp(4), 0, dp(6));
-        overlayView.addView(hintView);
+        hint = new TextView(this);
+        hint.setText("等待授权...");
+        hint.setTextColor(0xFFFFFFFF);
+        hint.setTextSize(13);
+        hint.setPadding(0, dp(4), 0, dp(6));
+        overlay.addView(hint);
 
-        Button autoSignButton = new Button(this);
-        autoSignButton.setText("自动签到");
-        autoSignButton.setAllCaps(false);
-        autoSignButton.setOnClickListener(v -> startAutoSign());
-        overlayView.addView(autoSignButton);
+        Button coins = new Button(this);
+        coins.setText("修改金币");
+        coins.setAllCaps(false);
+        coins.setOnClickListener(v -> modifyCoins());
+        overlay.addView(coins);
 
-        Button modifyCoinsButton = new Button(this);
-        modifyCoinsButton.setText("修改金币");
-        modifyCoinsButton.setAllCaps(false);
-        modifyCoinsButton.setOnClickListener(v -> modifyCoins());
-        overlayView.addView(modifyCoinsButton);
+        Button diamonds = new Button(this);
+        diamonds.setText("修改钻石");
+        diamonds.setAllCaps(false);
+        diamonds.setOnClickListener(v -> modifyDiamonds());
+        overlay.addView(diamonds);
 
-        Button modifyDiamondsButton = new Button(this);
-        modifyDiamondsButton.setText("修改钻石");
-        modifyDiamondsButton.setAllCaps(false);
-        modifyDiamondsButton.setOnClickListener(v -> modifyDiamonds());
-        overlayView.addView(modifyDiamondsButton);
+        int type = Build.VERSION.SDK_INT >= 26 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
+        params = new WindowManager.LayoutParams(dp(260), WindowManager.LayoutParams.WRAP_CONTENT, type, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.TOP | Gravity.START;
+        params.x = dp(12);
+        params.y = dp(96);
 
-        Button autoTowerButton = new Button(this);
-        autoTowerButton.setText("智能放塔");
-        autoTowerButton.setAllCaps(false);
-        autoTowerButton.setOnClickListener(v -> startAutoTowerPlace());
-        overlayView.addView(autoTowerButton);
-
-        Button continuousTowerButton = new Button(this);
-        continuousTowerButton.setText("连续放塔");
-        continuousTowerButton.setAllCaps(false);
-        continuousTowerButton.setOnClickListener(v -> startContinuousTowerPlace());
-        overlayView.addView(continuousTowerButton);
-
-        int type = Build.VERSION.SDK_INT >= 26
-            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            : WindowManager.LayoutParams.TYPE_PHONE;
-        overlayParams = new WindowManager.LayoutParams(
-            dp(260),
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        );
-        overlayParams.gravity = Gravity.TOP | Gravity.START;
-        overlayParams.x = dp(12);
-        overlayParams.y = dp(96);
-
-        title.setOnTouchListener(new DragTouchListener());
-        windowManager.addView(overlayView, overlayParams);
-    }
-
-    private void startProjection(int resultCode, Intent resultData) {
-        stopProjection();
-        MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-
-        captureThread = new HandlerThread("CarrotCapture");
-        captureThread.start();
-        captureHandler = new Handler(captureThread.getLooper());
-
-        mediaProjection = manager.getMediaProjection(resultCode, resultData);
-        projectionCallback = new MediaProjection.Callback() {
-            @Override
-            public void onStop() {
-                stopProjection(false);
-                if (hintView != null) {
-                    hintView.post(() -> hintView.setText("屏幕录制已停止。\n回到 App 可重新启动。"));
-                }
-            }
-        };
-        mediaProjection.registerCallback(projectionCallback, captureHandler);
-
-        int width = getResources().getDisplayMetrics().widthPixels;
-        int height = getResources().getDisplayMetrics().heightPixels;
-        int density = getResources().getDisplayMetrics().densityDpi;
-
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
-        virtualDisplay = mediaProjection.createVirtualDisplay(
-            "CarrotGuardScreen",
-            width,
-            height,
-            density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader.getSurface(),
-            null,
-            captureHandler
-        );
-        imageReader.setOnImageAvailableListener(reader -> analyzeLatestFrame(reader, width), captureHandler);
-        hintView.setText("屏幕分析已启动。\n打开游戏后可使用自动功能。");
-    }
-
-    private void analyzeLatestFrame(ImageReader reader, int width) {
-        Image image = reader.acquireLatestImage();
-        if (image == null) {
-            return;
-        }
-        try {
-            Image.Plane plane = image.getPlanes()[0];
-            ByteBuffer buffer = plane.getBuffer();
-            int pixelStride = plane.getPixelStride();
-            int rowStride = plane.getRowStride();
-            int rowPadding = rowStride - pixelStride * width;
-            int bitmapWidth = width + rowPadding / pixelStride;
-
-            Bitmap rawBitmap = Bitmap.createBitmap(bitmapWidth, image.getHeight(), Bitmap.Config.ARGB_8888);
-            rawBitmap.copyPixelsFromBuffer(buffer);
-            Bitmap visibleBitmap = Bitmap.createBitmap(rawBitmap, 0, 0, width, image.getHeight());
-            rawBitmap.recycle();
-
-            String suggestion = suggestionEngine.suggest(visibleBitmap, width, image.getHeight());
-            rememberFrame(visibleBitmap);
-
-            if (suggestion != null) {
-                hintView.post(() -> hintView.setText(suggestion));
-            }
-        } finally {
-            image.close();
-        }
-    }
-
-    private void rememberFrame(Bitmap bitmap) {
-        synchronized (frameLock) {
-            if (latestFrame != null) {
-                latestFrame.recycle();
-            }
-            latestFrame = bitmap.copy(Bitmap.Config.ARGB_8888, false);
-        }
-        bitmap.recycle();
-    }
-
-    private void startAutoSign() {
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("自动签到配置");
-        
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(20), dp(10), dp(20), dp(10));
-        
-        TextView signLabel = new TextView(this);
-        signLabel.setText("签到按钮位置（百分比）：");
-        layout.addView(signLabel);
-        
-        LinearLayout signLayout = new LinearLayout(this);
-        signLayout.setOrientation(LinearLayout.HORIZONTAL);
-        
-        TextView signXLabel = new TextView(this);
-        signXLabel.setText("X%:");
-        signLayout.addView(signXLabel);
-        
-        EditText signXInput = new EditText(this);
-        signXInput.setText("85");
-        signXInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        signLayout.addView(signXInput);
-        
-        TextView signYLabel = new TextView(this);
-        signYLabel.setText("Y%:");
-        signLayout.addView(signYLabel);
-        
-        EditText signYInput = new EditText(this);
-        signYInput.setText("15");
-        signYInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        signLayout.addView(signYInput);
-        
-        layout.addView(signLayout);
-        
-        TextView confirmLabel = new TextView(this);
-        confirmLabel.setText("确认按钮位置（百分比）：");
-        layout.addView(confirmLabel);
-        
-        LinearLayout confirmLayout = new LinearLayout(this);
-        confirmLayout.setOrientation(LinearLayout.HORIZONTAL);
-        
-        TextView confirmXLabel = new TextView(this);
-        confirmXLabel.setText("X%:");
-        confirmLayout.addView(confirmXLabel);
-        
-        EditText confirmXInput = new EditText(this);
-        confirmXInput.setText("50");
-        confirmXInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        confirmLayout.addView(confirmXInput);
-        
-        TextView confirmYLabel = new TextView(this);
-        confirmYLabel.setText("Y%:");
-        confirmLayout.addView(confirmYLabel);
-        
-        EditText confirmYInput = new EditText(this);
-        confirmYInput.setText("60");
-        confirmYInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        confirmLayout.addView(confirmYInput);
-        
-        layout.addView(confirmLayout);
-        
-        builder.setView(layout);
-        
-        builder.setPositiveButton("开始签到", (dialog, which) -> {
-            try {
-                int signX = Integer.parseInt(signXInput.getText().toString());
-                int signY = Integer.parseInt(signYInput.getText().toString());
-                int confirmX = Integer.parseInt(confirmXInput.getText().toString());
-                int confirmY = Integer.parseInt(confirmYInput.getText().toString());
-                executeAutoSign(signX, signY, confirmX, confirmY);
-            } catch (NumberFormatException e) {
-                hintView.post(() -> hintView.setText("请输入有效数字"));
-            }
-        });
-        
-        builder.setNegativeButton("取消", null);
-        builder.show();
-    }
-
-    private void executeAutoSign(int signX, int signY, int confirmX, int confirmY) {
-        int width = getResources().getDisplayMetrics().widthPixels;
-        int height = getResources().getDisplayMetrics().heightPixels;
-        autoSignService.setScreenSize(width, height);
-        autoSignService.setSignButtonPosition(signX, signY);
-        autoSignService.setConfirmButtonPosition(confirmX, confirmY);
-
-        autoSignService.startAutoSign(new AutoSignService.AutoSignCallback() {
-            @Override
-            public void onStatusUpdate(String status) {
-                hintView.post(() -> hintView.setText(status));
-            }
-
-            @Override
-            public void onComplete(String message) {
-                hintView.post(() -> hintView.setText(message));
-            }
-
-            @Override
-            public void onError(String error) {
-                hintView.post(() -> hintView.setText("错误: " + error));
-            }
-        });
+        title.setOnTouchListener(new Touch());
+        wm.addView(overlay, params);
     }
 
     private void modifyCoins() {
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("修改金币");
-        
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(20), dp(10), dp(20), dp(10));
-        
-        TextView currentLabel = new TextView(this);
-        currentLabel.setText("当前金币数：");
-        layout.addView(currentLabel);
-        
-        EditText currentInput = new EditText(this);
-        currentInput.setHint("输入当前金币数");
-        currentInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        layout.addView(currentInput);
-        
-        TextView newLabel = new TextView(this);
-        newLabel.setText("修改为：");
-        layout.addView(newLabel);
-        
-        EditText newInput = new EditText(this);
-        newInput.setHint("输入目标金币数");
-        newInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        newInput.setText("999999");
-        layout.addView(newInput);
-        
-        builder.setView(layout);
-        
-        builder.setPositiveButton("修改", (dialog, which) -> {
+        AlertDialog.Builder b = new AlertDialog.Builder(this);
+        b.setTitle("修改金币");
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setPadding(dp(20), dp(10), dp(20), dp(10));
+        TextView cl = new TextView(this);
+        cl.setText("当前金币:");
+        l.addView(cl);
+        EditText ci = new EditText(this);
+        ci.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        l.addView(ci);
+        TextView nl = new TextView(this);
+        nl.setText("修改为:");
+        l.addView(nl);
+        EditText ni = new EditText(this);
+        ni.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        ni.setText("999999");
+        l.addView(ni);
+        b.setView(l);
+        b.setPositiveButton("修改", (d, w) -> {
             try {
-                int current = Integer.parseInt(currentInput.getText().toString());
-                int newVal = Integer.parseInt(newInput.getText().toString());
-                executeModifyCoins(current, newVal);
-            } catch (NumberFormatException e) {
-                hintView.post(() -> hintView.setText("请输入有效数字"));
-            }
+                int c = Integer.parseInt(ci.getText().toString());
+                int n = Integer.parseInt(ni.getText().toString());
+                cheater.setCallback(cb());
+                cheater.modifyCoins(c, n);
+            } catch (NumberFormatException e) { hint.setText("请输入数字"); }
         });
-        
-        builder.setNegativeButton("取消", null);
-        builder.show();
-    }
-
-    private void executeModifyCoins(int currentCoins, int newCoins) {
-        gameCheater.setCallback(new GameCheater.CheatCallback() {
-            @Override
-            public void onStatusUpdate(String status) {
-                hintView.post(() -> hintView.setText(status));
-            }
-
-            @Override
-            public void onComplete(String message) {
-                hintView.post(() -> hintView.setText(message));
-            }
-
-            @Override
-            public void onError(String error) {
-                hintView.post(() -> hintView.setText("错误: " + error));
-            }
-        });
-
-        gameCheater.modifyGoldCoins(currentCoins, newCoins);
+        b.setNegativeButton("取消", null);
+        b.show();
     }
 
     private void modifyDiamonds() {
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("修改钻石");
-        
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(20), dp(10), dp(20), dp(10));
-        
-        TextView currentLabel = new TextView(this);
-        currentLabel.setText("当前钻石数：");
-        layout.addView(currentLabel);
-        
-        EditText currentInput = new EditText(this);
-        currentInput.setHint("输入当前钻石数");
-        currentInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        layout.addView(currentInput);
-        
-        TextView newLabel = new TextView(this);
-        newLabel.setText("修改为：");
-        layout.addView(newLabel);
-        
-        EditText newInput = new EditText(this);
-        newInput.setHint("输入目标钻石数");
-        newInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        newInput.setText("99999");
-        layout.addView(newInput);
-        
-        builder.setView(layout);
-        
-        builder.setPositiveButton("修改", (dialog, which) -> {
+        AlertDialog.Builder b = new AlertDialog.Builder(this);
+        b.setTitle("修改钻石");
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setPadding(dp(20), dp(10), dp(20), dp(10));
+        TextView cl = new TextView(this);
+        cl.setText("当前钻石:");
+        l.addView(cl);
+        EditText ci = new EditText(this);
+        ci.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        l.addView(ci);
+        TextView nl = new TextView(this);
+        nl.setText("修改为:");
+        l.addView(nl);
+        EditText ni = new EditText(this);
+        ni.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        ni.setText("99999");
+        l.addView(ni);
+        b.setView(l);
+        b.setPositiveButton("修改", (d, w) -> {
             try {
-                int current = Integer.parseInt(currentInput.getText().toString());
-                int newVal = Integer.parseInt(newInput.getText().toString());
-                executeModifyDiamonds(current, newVal);
-            } catch (NumberFormatException e) {
-                hintView.post(() -> hintView.setText("请输入有效数字"));
-            }
+                int c = Integer.parseInt(ci.getText().toString());
+                int n = Integer.parseInt(ni.getText().toString());
+                cheater.setCallback(cb());
+                cheater.modifyDiamonds(c, n);
+            } catch (NumberFormatException e) { hint.setText("请输入数字"); }
         });
-        
-        builder.setNegativeButton("取消", null);
-        builder.show();
+        b.setNegativeButton("取消", null);
+        b.show();
     }
 
-    private void executeModifyDiamonds(int currentDiamonds, int newDiamonds) {
-        gameCheater.setCallback(new GameCheater.CheatCallback() {
-            @Override
-            public void onStatusUpdate(String status) {
-                hintView.post(() -> hintView.setText(status));
-            }
-
-            @Override
-            public void onComplete(String message) {
-                hintView.post(() -> hintView.setText(message));
-            }
-
-            @Override
-            public void onError(String error) {
-                hintView.post(() -> hintView.setText("错误: " + error));
-            }
-        });
-
-        gameCheater.modifyDiamonds(currentDiamonds, newDiamonds);
+    private GameCheater.Callback cb() {
+        return new GameCheater.Callback() {
+            public void onStatus(String s) { hint.post(() -> hint.setText(s)); }
+            public void onDone(String s) { hint.post(() -> hint.setText(s)); }
+            public void onErr(String s) { hint.post(() -> hint.setText("错误:" + s)); }
+        };
     }
 
-    private void startAutoTowerPlace() {
-        Bitmap frame;
-        synchronized (frameLock) {
-            frame = latestFrame == null ? null : latestFrame.copy(Bitmap.Config.ARGB_8888, false);
-        }
-        
-        if (frame == null) {
-            hintView.setText("还没有画面。\n请先启动录屏并打开游戏。");
-            return;
-        }
-
-        int width = getResources().getDisplayMetrics().widthPixels;
-        int height = getResources().getDisplayMetrics().heightPixels;
-        autoTowerPlacer.setScreenSize(width, height);
-
-        autoTowerPlacer.startAutoPlace(frame, new AutoTowerPlacer.TowerPlaceCallback() {
-            @Override
-            public void onStatusUpdate(String status) {
-                hintView.post(() -> hintView.setText(status));
-            }
-
-            @Override
-            public void onTowerPlaced(int x, int y, String reason) {
-                hintView.post(() -> hintView.setText("已放塔: (" + x + ", " + y + ")\n原因: " + reason));
-            }
-
-            @Override
-            public void onComplete(String message) {
-                hintView.post(() -> hintView.setText(message));
-            }
-
-            @Override
-            public void onError(String error) {
-                hintView.post(() -> hintView.setText("错误: " + error));
-            }
-        });
+    private void startProj(int code, Intent data) {
+        stopProj();
+        MediaProjectionManager m = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        thread = new HandlerThread("Cap");
+        thread.start();
+        handler = new Handler(thread.getLooper());
+        proj = m.getMediaProjection(code, data);
+        int w = getResources().getDisplayMetrics().widthPixels;
+        int h = getResources().getDisplayMetrics().heightPixels;
+        int d = getResources().getDisplayMetrics().densityDpi;
+        reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
+        vd = proj.createVirtualDisplay("CG", w, h, d, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, handler);
+        reader.setOnImageAvailableListener(r -> onFrame(r, w), handler);
+        hint.setText("已启动");
     }
 
-    private void startContinuousTowerPlace() {
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("连续放塔配置");
-        
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(20), dp(10), dp(20), dp(10));
-        
-        TextView countLabel = new TextView(this);
-        countLabel.setText("放塔数量：");
-        layout.addView(countLabel);
-        
-        EditText countInput = new EditText(this);
-        countInput.setHint("输入放塔数量");
-        countInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        countInput.setText("5");
-        layout.addView(countInput);
-        
-        builder.setView(layout);
-        
-        builder.setPositiveButton("开始", (dialog, which) -> {
-            try {
-                int count = Integer.parseInt(countInput.getText().toString());
-                executeContinuousTowerPlace(count);
-            } catch (NumberFormatException e) {
-                hintView.post(() -> hintView.setText("请输入有效数字"));
+    private void onFrame(ImageReader r, int w) {
+        Image img = r.acquireLatestImage();
+        if (img == null) return;
+        try {
+            Image.Plane p = img.getPlanes()[0];
+            ByteBuffer buf = p.getBuffer();
+            int ps = p.getPixelStride(), rs = p.getRowStride();
+            int bw = w + (rs - ps * w) / ps;
+            Bitmap raw = Bitmap.createBitmap(bw, img.getHeight(), Bitmap.Config.ARGB_8888);
+            raw.copyPixelsFromBuffer(buf);
+            Bitmap vis = Bitmap.createBitmap(raw, 0, 0, w, img.getHeight());
+            raw.recycle();
+            synchronized (lock) {
+                if (frame != null) frame.recycle();
+                frame = vis.copy(Bitmap.Config.ARGB_8888, false);
             }
-        });
-        
-        builder.setNegativeButton("取消", null);
-        builder.show();
+            vis.recycle();
+        } finally { img.close(); }
     }
 
-    private void executeContinuousTowerPlace(int count) {
-        int width = getResources().getDisplayMetrics().widthPixels;
-        int height = getResources().getDisplayMetrics().heightPixels;
-        autoTowerPlacer.setScreenSize(width, height);
-
-        autoTowerPlacer.startContinuousPlace(count, new AutoTowerPlacer.ContinuousPlaceCallback() {
-            @Override
-            public void onProgress(String status) {
-                hintView.post(() -> hintView.setText(status));
-            }
-
-            @Override
-            public void onTowerPlaced(int x, int y, String reason) {
-                hintView.post(() -> hintView.setText("已放塔: (" + x + ", " + y + ")\n原因: " + reason));
-            }
-
-            @Override
-            public void onComplete(String message) {
-                hintView.post(() -> hintView.setText(message));
-            }
-
-            @Override
-            public void onError(String error) {
-                hintView.post(() -> hintView.setText("错误: " + error));
-            }
-
-            @Override
-            public Bitmap onRequestScreenshot() {
-                synchronized (frameLock) {
-                    return latestFrame == null ? null : latestFrame.copy(Bitmap.Config.ARGB_8888, false);
-                }
-            }
-        });
+    private void stopProj() {
+        if (vd != null) { vd.release(); vd = null; }
+        if (reader != null) { reader.close(); reader = null; }
+        if (proj != null) { proj.stop(); proj = null; }
+        if (thread != null) { thread.quitSafely(); thread = null; }
     }
 
-    private void stopProjection() {
-        stopProjection(true);
-    }
-
-    private void stopProjection(boolean stopMediaProjection) {
-        if (virtualDisplay != null) {
-            virtualDisplay.release();
-            virtualDisplay = null;
-        }
-        if (imageReader != null) {
-            imageReader.close();
-            imageReader = null;
-        }
-        if (mediaProjection != null) {
-            if (projectionCallback != null) {
-                mediaProjection.unregisterCallback(projectionCallback);
-                projectionCallback = null;
-            }
-            if (stopMediaProjection) {
-                mediaProjection.stop();
-            }
-            mediaProjection = null;
-        }
-        if (captureThread != null) {
-            captureThread.quitSafely();
-            captureThread = null;
-            captureHandler = null;
+    private void createChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationChannel ch = new NotificationChannel(CH, "萝卜助手", NotificationManager.IMPORTANCE_LOW);
+            getSystemService(NotificationManager.class).createNotificationChannel(ch);
         }
     }
 
-    private void recycleLatestFrame() {
-        synchronized (frameLock) {
-            if (latestFrame != null) {
-                latestFrame.recycle();
-                latestFrame = null;
-            }
-        }
+    private Notification buildNotif() {
+        Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CH) : new Notification.Builder(this);
+        return b.setContentTitle("运行中").setSmallIcon(android.R.drawable.ic_menu_view).build();
     }
 
-    private Notification buildNotification() {
-        Notification.Builder builder = Build.VERSION.SDK_INT >= 26
-            ? new Notification.Builder(this, CHANNEL_ID)
-            : new Notification.Builder(this);
-        return builder
-            .setContentTitle("萝卜战术助手运行中")
-            .setContentText("正在读取屏幕并显示策略提示")
-            .setSmallIcon(android.R.drawable.ic_menu_view)
-            .build();
-    }
+    private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
 
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT < 26) {
-            return;
-        }
-        NotificationChannel channel = new NotificationChannel(
-            CHANNEL_ID,
-            "萝卜战术助手",
-            NotificationManager.IMPORTANCE_LOW
-        );
-        NotificationManager manager = getSystemService(NotificationManager.class);
-        manager.createNotificationChannel(channel);
-    }
-
-    private int dp(int value) {
-        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
-    }
-
-    private class DragTouchListener implements android.view.View.OnTouchListener {
-        private int startX;
-        private int startY;
-        private float downX;
-        private float downY;
-
-        @Override
-        public boolean onTouch(android.view.View view, MotionEvent event) {
-            switch (event.getAction()) {
-                case MotionEvent.ACTION_DOWN:
-                    startX = overlayParams.x;
-                    startY = overlayParams.y;
-                    downX = event.getRawX();
-                    downY = event.getRawY();
-                    return true;
-                case MotionEvent.ACTION_MOVE:
-                    overlayParams.x = startX + (int) (event.getRawX() - downX);
-                    overlayParams.y = startY + (int) (event.getRawY() - downY);
-                    windowManager.updateViewLayout(overlayView, overlayParams);
-                    return true;
-                default:
-                    return true;
+    private class Touch implements View.OnTouchListener {
+        int sx, sy; float dx, dy;
+        public boolean onTouch(android.view.View v, MotionEvent e) {
+            switch (e.getAction()) {
+                case MotionEvent.ACTION_DOWN: sx=params.x; sy=params.y; dx=e.getRawX(); dy=e.getRawY(); return true;
+                case MotionEvent.ACTION_MOVE: params.x=sx+(int)(e.getRawX()-dx); params.y=sy+(int)(e.getRawY()-dy); wm.updateViewLayout(overlay,params); return true;
+                default: return true;
             }
         }
     }

@@ -1,19 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">萝卜战术助手</string>
-    <string name="main_description">悬浮窗会读取当前屏幕并显示策略提示。它不会自动点击、不会修改数据、不会改变游戏。</string>
-    <string name="enable_overlay">1. 开启悬浮窗权限</string>
-    <string name="start_overlay">2. 启动屏幕分析悬浮窗</string>
-    <string name="stop_overlay">停止悬浮窗</string>
-    <string name="import_guide_json">导入攻略 JSON</string>
-    <string name="manage_guides">管理攻略</string>
-    <string name="diagnostics">匹配诊断</string>
-    <string name="guide_manager">攻略管理</string>
-    <string name="refresh">刷新</string>
-    <string name="back">返回</string>
-    <string name="details">详情</string>
-    <string name="delete">删除</string>
-    <string name="cancel">取消</string>
-    <string name="ok">确定</string>
-    <string name="pick_screenshot">选择截图</string>
+    <string name="app_name">萝卜助手</string>
 </resources>
