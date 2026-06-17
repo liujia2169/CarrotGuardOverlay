@@ -6,6 +6,9 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class MapAnalyzer {
     private static final int GRID_COLUMNS = 12;
     private static final int GRID_ROWS = 18;
@@ -49,6 +52,10 @@ public class MapAnalyzer {
         int towerCandidates = 0;
         int blockers = 0;
 
+        List<TowerPosition> routePositions = new ArrayList<>();
+        List<TowerPosition> towerSlotPositions = new ArrayList<>();
+        List<TowerPosition> blockerPositions = new ArrayList<>();
+
         for (int row = 0; row < GRID_ROWS; row++) {
             for (int col = 0; col < GRID_COLUMNS; col++) {
                 Rect cell = new Rect(
@@ -62,12 +69,15 @@ public class MapAnalyzer {
                 if (isRouteLike(stats)) {
                     canvas.drawRect(cell, routePaint);
                     routeCells++;
+                    routePositions.add(new TowerPosition(row, col, cell.centerX(), cell.centerY()));
                 } else if (isTowerSlotLike(stats)) {
                     canvas.drawRect(inset(cell, 4), towerPaint);
                     towerCandidates++;
+                    towerSlotPositions.add(new TowerPosition(row, col, cell.centerX(), cell.centerY()));
                 } else if (isBlockerLike(stats)) {
                     canvas.drawRect(inset(cell, 5), blockerPaint);
                     blockers++;
+                    blockerPositions.add(new TowerPosition(row, col, cell.centerX(), cell.centerY()));
                 }
             }
         }
@@ -80,7 +90,7 @@ public class MapAnalyzer {
         canvas.drawText("路线=" + routeCells + " 塔位=" + towerCandidates + " 障碍=" + blockers, legend.left + 12, legend.top + 70, labelPaint);
 
         String summary = "地图分析完成。\n路线格：" + routeCells + "  塔位：" + towerCandidates + "  障碍：" + blockers;
-        return new AnalysisResult(annotated, summary);
+        return new AnalysisResult(annotated, summary, routePositions, towerSlotPositions, blockerPositions);
     }
 
     private CellStats sampleCell(Bitmap bitmap, Rect cell) {
@@ -145,13 +155,36 @@ public class MapAnalyzer {
         return Math.max(min, Math.min(max, value));
     }
 
+    public static class TowerPosition {
+        public final int row;
+        public final int col;
+        public final int x;
+        public final int y;
+
+        public TowerPosition(int row, int col, int x, int y) {
+            this.row = row;
+            this.col = col;
+            this.x = x;
+            this.y = y;
+        }
+    }
+
     public static class AnalysisResult {
         public final Bitmap annotatedBitmap;
         public final String summary;
+        public final List<TowerPosition> routePositions;
+        public final List<TowerPosition> towerSlotPositions;
+        public final List<TowerPosition> blockerPositions;
 
-        AnalysisResult(Bitmap annotatedBitmap, String summary) {
+        AnalysisResult(Bitmap annotatedBitmap, String summary, 
+                      List<TowerPosition> routePositions, 
+                      List<TowerPosition> towerSlotPositions,
+                      List<TowerPosition> blockerPositions) {
             this.annotatedBitmap = annotatedBitmap;
             this.summary = summary;
+            this.routePositions = routePositions;
+            this.towerSlotPositions = towerSlotPositions;
+            this.blockerPositions = blockerPositions;
         }
     }
 

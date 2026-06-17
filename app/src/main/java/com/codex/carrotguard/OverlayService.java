@@ -1,10 +1,10 @@
 package com.codex.carrotguard;
 
+import android.app.AlertDialog;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
-import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -15,27 +15,19 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
-import android.net.Uri;
 import android.os.Build;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
-import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
 
 public class OverlayService extends Service {
     public static final String EXTRA_RESULT_CODE = "result_code";
@@ -47,7 +39,9 @@ public class OverlayService extends Service {
     private final Object frameLock = new Object();
     private final SuggestionEngine suggestionEngine = new SuggestionEngine();
     private final MapAnalyzer mapAnalyzer = new MapAnalyzer();
-    private MapGuideLibrary mapGuideLibrary;
+    private AutoSignService autoSignService;
+    private GameCheater gameCheater;
+    private AutoTowerPlacer autoTowerPlacer;
 
     private WindowManager windowManager;
     private LinearLayout overlayView;
@@ -68,7 +62,9 @@ public class OverlayService extends Service {
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, buildNotification());
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-        mapGuideLibrary = new MapGuideLibrary(this);
+        autoSignService = new AutoSignService();
+        gameCheater = new GameCheater();
+        autoTowerPlacer = new AutoTowerPlacer();
         addOverlay();
     }
 
@@ -117,29 +113,35 @@ public class OverlayService extends Service {
         hintView.setPadding(0, dp(4), 0, dp(6));
         overlayView.addView(hintView);
 
-        Button saveButton = new Button(this);
-        saveButton.setText("保存截图");
-        saveButton.setAllCaps(false);
-        saveButton.setOnClickListener(v -> saveLatestFrame());
-        overlayView.addView(saveButton);
+        Button autoSignButton = new Button(this);
+        autoSignButton.setText("自动签到");
+        autoSignButton.setAllCaps(false);
+        autoSignButton.setOnClickListener(v -> startAutoSign());
+        overlayView.addView(autoSignButton);
 
-        Button analyzeButton = new Button(this);
-        analyzeButton.setText("分析地图");
-        analyzeButton.setAllCaps(false);
-        analyzeButton.setOnClickListener(v -> analyzeLatestFrame());
-        overlayView.addView(analyzeButton);
+        Button modifyCoinsButton = new Button(this);
+        modifyCoinsButton.setText("修改金币");
+        modifyCoinsButton.setAllCaps(false);
+        modifyCoinsButton.setOnClickListener(v -> modifyCoins());
+        overlayView.addView(modifyCoinsButton);
 
-        Button matchButton = new Button(this);
-        matchButton.setText("匹配攻略");
-        matchButton.setAllCaps(false);
-        matchButton.setOnClickListener(v -> matchGuide());
-        overlayView.addView(matchButton);
+        Button modifyDiamondsButton = new Button(this);
+        modifyDiamondsButton.setText("修改钻石");
+        modifyDiamondsButton.setAllCaps(false);
+        modifyDiamondsButton.setOnClickListener(v -> modifyDiamonds());
+        overlayView.addView(modifyDiamondsButton);
 
-        Button signatureButton = new Button(this);
-        signatureButton.setText("导出攻略 JSON");
-        signatureButton.setAllCaps(false);
-        signatureButton.setOnClickListener(v -> exportSignature());
-        overlayView.addView(signatureButton);
+        Button autoTowerButton = new Button(this);
+        autoTowerButton.setText("智能放塔");
+        autoTowerButton.setAllCaps(false);
+        autoTowerButton.setOnClickListener(v -> startAutoTowerPlace());
+        overlayView.addView(autoTowerButton);
+
+        Button continuousTowerButton = new Button(this);
+        continuousTowerButton.setText("连续放塔");
+        continuousTowerButton.setAllCaps(false);
+        continuousTowerButton.setOnClickListener(v -> startContinuousTowerPlace());
+        overlayView.addView(continuousTowerButton);
 
         int type = Build.VERSION.SDK_INT >= 26
             ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -195,7 +197,7 @@ public class OverlayService extends Service {
             captureHandler
         );
         imageReader.setOnImageAvailableListener(reader -> analyzeLatestFrame(reader, width), captureHandler);
-        hintView.setText("屏幕分析已启动。\n打开游戏后可保存截图或匹配攻略。");
+        hintView.setText("屏幕分析已启动。\n打开游戏后可使用自动功能。");
     }
 
     private void analyzeLatestFrame(ImageReader reader, int width) {
@@ -237,166 +239,343 @@ public class OverlayService extends Service {
         bitmap.recycle();
     }
 
-    private void saveLatestFrame() {
-        processLatestFrame("carrot_guard_", false);
-    }
-
-    private void analyzeLatestFrame() {
-        processLatestFrame("carrot_analysis_", true);
-    }
-
-    private void matchGuide() {
-        processLatestFrameForGuide(false);
-    }
-
-    private void exportSignature() {
-        processLatestFrameForGuide(true);
-    }
-
-    private void processLatestFrame(String prefix, boolean analyzeMap) {
-        Handler handler = captureHandler;
-        if (handler == null) {
-            hintView.setText("屏幕录制未运行。\n请回到 App 重新启动。");
-            return;
-        }
-
-        Bitmap frame;
-        synchronized (frameLock) {
-            frame = latestFrame == null ? null : latestFrame.copy(Bitmap.Config.ARGB_8888, false);
-        }
-        if (frame == null) {
-            hintView.setText("还没有画面。\n请先启动录屏并打开游戏。");
-            return;
-        }
-
-        handler.post(() -> {
-            Bitmap outputBitmap = frame;
+    private void startAutoSign() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("自动签到配置");
+        
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(20), dp(10), dp(20), dp(10));
+        
+        TextView signLabel = new TextView(this);
+        signLabel.setText("签到按钮位置（百分比）：");
+        layout.addView(signLabel);
+        
+        LinearLayout signLayout = new LinearLayout(this);
+        signLayout.setOrientation(LinearLayout.HORIZONTAL);
+        
+        TextView signXLabel = new TextView(this);
+        signXLabel.setText("X%:");
+        signLayout.addView(signXLabel);
+        
+        EditText signXInput = new EditText(this);
+        signXInput.setText("85");
+        signXInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        signLayout.addView(signXInput);
+        
+        TextView signYLabel = new TextView(this);
+        signYLabel.setText("Y%:");
+        signLayout.addView(signYLabel);
+        
+        EditText signYInput = new EditText(this);
+        signYInput.setText("15");
+        signYInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        signLayout.addView(signYInput);
+        
+        layout.addView(signLayout);
+        
+        TextView confirmLabel = new TextView(this);
+        confirmLabel.setText("确认按钮位置（百分比）：");
+        layout.addView(confirmLabel);
+        
+        LinearLayout confirmLayout = new LinearLayout(this);
+        confirmLayout.setOrientation(LinearLayout.HORIZONTAL);
+        
+        TextView confirmXLabel = new TextView(this);
+        confirmXLabel.setText("X%:");
+        confirmLayout.addView(confirmXLabel);
+        
+        EditText confirmXInput = new EditText(this);
+        confirmXInput.setText("50");
+        confirmXInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        confirmLayout.addView(confirmXInput);
+        
+        TextView confirmYLabel = new TextView(this);
+        confirmYLabel.setText("Y%:");
+        confirmLayout.addView(confirmYLabel);
+        
+        EditText confirmYInput = new EditText(this);
+        confirmYInput.setText("60");
+        confirmYInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        confirmLayout.addView(confirmYInput);
+        
+        layout.addView(confirmLayout);
+        
+        builder.setView(layout);
+        
+        builder.setPositiveButton("开始签到", (dialog, which) -> {
             try {
-                String summary = "截图已保存。";
-                if (analyzeMap) {
-                    MapAnalyzer.AnalysisResult result = mapAnalyzer.analyze(frame);
-                    outputBitmap = result.annotatedBitmap;
-                    summary = result.summary;
-                }
+                int signX = Integer.parseInt(signXInput.getText().toString());
+                int signY = Integer.parseInt(signYInput.getText().toString());
+                int confirmX = Integer.parseInt(confirmXInput.getText().toString());
+                int confirmY = Integer.parseInt(confirmYInput.getText().toString());
+                executeAutoSign(signX, signY, confirmX, confirmY);
+            } catch (NumberFormatException e) {
+                hintView.post(() -> hintView.setText("请输入有效数字"));
+            }
+        });
+        
+        builder.setNegativeButton("取消", null);
+        builder.show();
+    }
 
-                String name = prefix + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".png";
-                saveBitmapToPictures(outputBitmap, name);
-                String message = summary + "\n保存位置：Pictures/CarrotGuardOverlay/" + name;
+    private void executeAutoSign(int signX, int signY, int confirmX, int confirmY) {
+        int width = getResources().getDisplayMetrics().widthPixels;
+        int height = getResources().getDisplayMetrics().heightPixels;
+        autoSignService.setScreenSize(width, height);
+        autoSignService.setSignButtonPosition(signX, signY);
+        autoSignService.setConfirmButtonPosition(confirmX, confirmY);
+
+        autoSignService.startAutoSign(new AutoSignService.AutoSignCallback() {
+            @Override
+            public void onStatusUpdate(String status) {
+                hintView.post(() -> hintView.setText(status));
+            }
+
+            @Override
+            public void onComplete(String message) {
                 hintView.post(() -> hintView.setText(message));
-            } catch (Exception e) {
-                hintView.post(() -> hintView.setText("保存失败：\n" + e.getMessage()));
-            } finally {
-                frame.recycle();
-                if (outputBitmap != frame) {
-                    outputBitmap.recycle();
-                }
+            }
+
+            @Override
+            public void onError(String error) {
+                hintView.post(() -> hintView.setText("错误: " + error));
             }
         });
     }
 
-    private void processLatestFrameForGuide(boolean exportSignature) {
-        Handler handler = captureHandler;
-        if (handler == null) {
-            hintView.setText("屏幕录制未运行。\n请回到 App 重新启动。");
-            return;
-        }
+    private void modifyCoins() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("修改金币");
+        
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(20), dp(10), dp(20), dp(10));
+        
+        TextView currentLabel = new TextView(this);
+        currentLabel.setText("当前金币数：");
+        layout.addView(currentLabel);
+        
+        EditText currentInput = new EditText(this);
+        currentInput.setHint("输入当前金币数");
+        currentInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        layout.addView(currentInput);
+        
+        TextView newLabel = new TextView(this);
+        newLabel.setText("修改为：");
+        layout.addView(newLabel);
+        
+        EditText newInput = new EditText(this);
+        newInput.setHint("输入目标金币数");
+        newInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        newInput.setText("999999");
+        layout.addView(newInput);
+        
+        builder.setView(layout);
+        
+        builder.setPositiveButton("修改", (dialog, which) -> {
+            try {
+                int current = Integer.parseInt(currentInput.getText().toString());
+                int newVal = Integer.parseInt(newInput.getText().toString());
+                executeModifyCoins(current, newVal);
+            } catch (NumberFormatException e) {
+                hintView.post(() -> hintView.setText("请输入有效数字"));
+            }
+        });
+        
+        builder.setNegativeButton("取消", null);
+        builder.show();
+    }
 
+    private void executeModifyCoins(int currentCoins, int newCoins) {
+        gameCheater.setCallback(new GameCheater.CheatCallback() {
+            @Override
+            public void onStatusUpdate(String status) {
+                hintView.post(() -> hintView.setText(status));
+            }
+
+            @Override
+            public void onComplete(String message) {
+                hintView.post(() -> hintView.setText(message));
+            }
+
+            @Override
+            public void onError(String error) {
+                hintView.post(() -> hintView.setText("错误: " + error));
+            }
+        });
+
+        gameCheater.modifyGoldCoins(currentCoins, newCoins);
+    }
+
+    private void modifyDiamonds() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("修改钻石");
+        
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(20), dp(10), dp(20), dp(10));
+        
+        TextView currentLabel = new TextView(this);
+        currentLabel.setText("当前钻石数：");
+        layout.addView(currentLabel);
+        
+        EditText currentInput = new EditText(this);
+        currentInput.setHint("输入当前钻石数");
+        currentInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        layout.addView(currentInput);
+        
+        TextView newLabel = new TextView(this);
+        newLabel.setText("修改为：");
+        layout.addView(newLabel);
+        
+        EditText newInput = new EditText(this);
+        newInput.setHint("输入目标钻石数");
+        newInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        newInput.setText("99999");
+        layout.addView(newInput);
+        
+        builder.setView(layout);
+        
+        builder.setPositiveButton("修改", (dialog, which) -> {
+            try {
+                int current = Integer.parseInt(currentInput.getText().toString());
+                int newVal = Integer.parseInt(newInput.getText().toString());
+                executeModifyDiamonds(current, newVal);
+            } catch (NumberFormatException e) {
+                hintView.post(() -> hintView.setText("请输入有效数字"));
+            }
+        });
+        
+        builder.setNegativeButton("取消", null);
+        builder.show();
+    }
+
+    private void executeModifyDiamonds(int currentDiamonds, int newDiamonds) {
+        gameCheater.setCallback(new GameCheater.CheatCallback() {
+            @Override
+            public void onStatusUpdate(String status) {
+                hintView.post(() -> hintView.setText(status));
+            }
+
+            @Override
+            public void onComplete(String message) {
+                hintView.post(() -> hintView.setText(message));
+            }
+
+            @Override
+            public void onError(String error) {
+                hintView.post(() -> hintView.setText("错误: " + error));
+            }
+        });
+
+        gameCheater.modifyDiamonds(currentDiamonds, newDiamonds);
+    }
+
+    private void startAutoTowerPlace() {
         Bitmap frame;
         synchronized (frameLock) {
             frame = latestFrame == null ? null : latestFrame.copy(Bitmap.Config.ARGB_8888, false);
         }
+        
         if (frame == null) {
             hintView.setText("还没有画面。\n请先启动录屏并打开游戏。");
             return;
         }
 
-        handler.post(() -> {
-            try {
-                if (exportSignature) {
-                    String guideJson = mapGuideLibrary.guideTemplateJson(frame);
-                    String name = "carrot_guide_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".json";
-                    saveTextToDocuments(guideJson, name);
-                    hintView.post(() -> hintView.setText("攻略 JSON 已导出：\nDocuments/CarrotGuardOverlay/" + name));
-                } else {
-                    MapGuideLibrary.MatchResult result = mapGuideLibrary.match(frame);
-                    hintView.post(() -> hintView.setText(result.message));
-                }
-            } catch (Exception e) {
-                hintView.post(() -> hintView.setText("攻略操作失败：\n" + e.getMessage()));
-            } finally {
-                frame.recycle();
+        int width = getResources().getDisplayMetrics().widthPixels;
+        int height = getResources().getDisplayMetrics().heightPixels;
+        autoTowerPlacer.setScreenSize(width, height);
+
+        autoTowerPlacer.startAutoPlace(frame, new AutoTowerPlacer.TowerPlaceCallback() {
+            @Override
+            public void onStatusUpdate(String status) {
+                hintView.post(() -> hintView.setText(status));
+            }
+
+            @Override
+            public void onTowerPlaced(int x, int y, String reason) {
+                hintView.post(() -> hintView.setText("已放塔: (" + x + ", " + y + ")\n原因: " + reason));
+            }
+
+            @Override
+            public void onComplete(String message) {
+                hintView.post(() -> hintView.setText(message));
+            }
+
+            @Override
+            public void onError(String error) {
+                hintView.post(() -> hintView.setText("错误: " + error));
             }
         });
     }
 
-    private void saveBitmapToPictures(Bitmap bitmap, String name) throws Exception {
-        if (Build.VERSION.SDK_INT >= 29) {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, name);
-            values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
-            values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/CarrotGuardOverlay");
-            values.put(MediaStore.Images.Media.IS_PENDING, 1);
-
-            Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-            if (uri == null) {
-                throw new IllegalStateException("系统媒体库写入失败");
+    private void startContinuousTowerPlace() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("连续放塔配置");
+        
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(20), dp(10), dp(20), dp(10));
+        
+        TextView countLabel = new TextView(this);
+        countLabel.setText("放塔数量：");
+        layout.addView(countLabel);
+        
+        EditText countInput = new EditText(this);
+        countInput.setHint("输入放塔数量");
+        countInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        countInput.setText("5");
+        layout.addView(countInput);
+        
+        builder.setView(layout);
+        
+        builder.setPositiveButton("开始", (dialog, which) -> {
+            try {
+                int count = Integer.parseInt(countInput.getText().toString());
+                executeContinuousTowerPlace(count);
+            } catch (NumberFormatException e) {
+                hintView.post(() -> hintView.setText("请输入有效数字"));
             }
-            try (OutputStream output = getContentResolver().openOutputStream(uri)) {
-                if (output == null || !bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
-                    throw new IllegalStateException("无法写入 PNG 图片");
-                }
-            }
-            values.clear();
-            values.put(MediaStore.Images.Media.IS_PENDING, 0);
-            getContentResolver().update(uri, values, null, null);
-            return;
-        }
-
-        File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "CarrotGuardOverlay");
-        if (!dir.exists() && !dir.mkdirs()) {
-            throw new IllegalStateException("无法创建目录 " + dir.getAbsolutePath());
-        }
-        File file = new File(dir, name);
-        try (FileOutputStream output = new FileOutputStream(file)) {
-            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
-                throw new IllegalStateException("无法写入 PNG 图片");
-            }
-        }
+        });
+        
+        builder.setNegativeButton("取消", null);
+        builder.show();
     }
 
-    private void saveTextToDocuments(String text, String name) throws Exception {
-        byte[] bytes = text.getBytes("UTF-8");
-        if (Build.VERSION.SDK_INT >= 29) {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Files.FileColumns.DISPLAY_NAME, name);
-            values.put(MediaStore.Files.FileColumns.MIME_TYPE, "text/plain");
-            values.put(MediaStore.Files.FileColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/CarrotGuardOverlay");
-            values.put(MediaStore.Files.FileColumns.IS_PENDING, 1);
+    private void executeContinuousTowerPlace(int count) {
+        int width = getResources().getDisplayMetrics().widthPixels;
+        int height = getResources().getDisplayMetrics().heightPixels;
+        autoTowerPlacer.setScreenSize(width, height);
 
-            Uri uri = getContentResolver().insert(MediaStore.Files.getContentUri("external"), values);
-            if (uri == null) {
-                throw new IllegalStateException("系统媒体库写入失败");
+        autoTowerPlacer.startContinuousPlace(count, new AutoTowerPlacer.ContinuousPlaceCallback() {
+            @Override
+            public void onProgress(String status) {
+                hintView.post(() -> hintView.setText(status));
             }
-            try (OutputStream output = getContentResolver().openOutputStream(uri)) {
-                if (output == null) {
-                    throw new IllegalStateException("无法打开输出流");
+
+            @Override
+            public void onTowerPlaced(int x, int y, String reason) {
+                hintView.post(() -> hintView.setText("已放塔: (" + x + ", " + y + ")\n原因: " + reason));
+            }
+
+            @Override
+            public void onComplete(String message) {
+                hintView.post(() -> hintView.setText(message));
+            }
+
+            @Override
+            public void onError(String error) {
+                hintView.post(() -> hintView.setText("错误: " + error));
+            }
+
+            @Override
+            public Bitmap onRequestScreenshot() {
+                synchronized (frameLock) {
+                    return latestFrame == null ? null : latestFrame.copy(Bitmap.Config.ARGB_8888, false);
                 }
-                output.write(bytes);
             }
-            values.clear();
-            values.put(MediaStore.Files.FileColumns.IS_PENDING, 0);
-            getContentResolver().update(uri, values, null, null);
-            return;
-        }
-
-        File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "CarrotGuardOverlay");
-        if (!dir.exists() && !dir.mkdirs()) {
-            throw new IllegalStateException("无法创建目录 " + dir.getAbsolutePath());
-        }
-        File file = new File(dir, name);
-        try (FileOutputStream output = new FileOutputStream(file)) {
-            output.write(bytes);
-        }
+        });
     }
 
     private void stopProjection() {
